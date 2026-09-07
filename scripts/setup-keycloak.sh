@@ -19,7 +19,8 @@ KEYCLOAK_ADMIN_PASSWORD=${KEYCLOAK_ADMIN_PASSWORD:-admin}
 
 REALM=${KEYCLOAK_REALM:-temporal}
 CLIENT_ID=${KEYCLOAK_CLIENT_ID:-temporal-app}
-REDIRECT_URI=${KEYCLOAK_REDIRECT_URI:-http://localhost:8080/*}
+# Both Web UIs: cluster-a on 8080, cluster-b on 8081. Comma separated.
+REDIRECT_URI=${KEYCLOAK_REDIRECT_URI:-http://localhost:8080/*,http://localhost:8081/*}
 ROLE_NAME=${KEYCLOAK_ROLE_NAME:-temporal-system:admin}
 MAPPER_NAME=${KEYCLOAK_MAPPER_NAME:-temporal-permissions-mapper}
 CLAIM_NAME=${KEYCLOAK_CLAIM_NAME:-permissions}
@@ -144,7 +145,8 @@ print(json.dumps({
     "standardFlowEnabled": True,
     "directAccessGrantsEnabled": True,  # Direct access grants
     "serviceAccountsEnabled": True,     # Service accounts roles
-    "redirectUris": [redirect_uri],
+    # Comma separated, so one client can serve the Web UI of both clusters.
+    "redirectUris": [u.strip() for u in redirect_uri.split(",") if u.strip()],
 }))
 ' "$CLIENT_ID" "$REDIRECT_URI")
 

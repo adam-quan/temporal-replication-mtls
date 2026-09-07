@@ -10,7 +10,8 @@ frontend of each one.
 - `scripts/generate-certs.sh` - the self-signed CA and all certificates
 - `scripts/setup-keycloak.sh` - the Keycloak realm, client, role, claim mapper and user
 - `scripts/connect-clusters.sh` - joins the two clusters and creates a global namespace
-- `scripts/test.sh` - quick end-to-end check of both clusters' TLS and cluster lists
+- `scripts/verify-replication.sh` - checks that replication *and* mTLS are actually working
+- `scripts/test.sh` - quick smoke check of both clusters' TLS and cluster lists
 
 | | cluster-a | cluster-b |
 |---|---|---|
@@ -154,6 +155,42 @@ refresh, creates the namespace on cluster-a, and does not return until that
 namespace has replicated to cluster-b.
 
 ## Checking that replication works
+
+```bash
+./scripts/verify-replication.sh
+```
+
+Forty-odd assertions across seven areas, exiting non-zero if any of them fail:
+
+1. **Certificates** - every leaf chains to the CA, is not about to expire, and
+   carries the extended key usages and SANs its role needs.
+2. **mTLS on the internal frontend**, the endpoint replication actually uses.
+   Both the positive case and three negative ones: no client certificate,
+   plaintext gRPC, and a well-formed certificate signed by an untrusted CA. The
+   last one matters most - it is the difference between "a certificate is
+   required" and "*your* certificate is required".
+3. **The public frontend** still wants both doors unlocked: it serves the right
+   certificate, asks callers for one, and rejects a valid certificate that
+   arrives without a JWT.
+4. **Cluster registration** - each side sees both clusters, at the expected
+   addresses, with connections enabled and distinct initial failover versions.
+5. **Namespace replication** - the global namespace exists on both sides and is
+   the *same* namespace, compared by ID rather than by name.
+6. **Workflow history replication** - starts a probe workflow on whichever
+   cluster is active, waits for the same run ID to appear on the standby, and
+   cleans up after itself.
+7. **Failover** - opt-in with `--failover`. Flips the namespace to the other
+   cluster, checks that the *old* active cluster learns about it (which only
+   happens if replication flows both ways), checks the failover version
+   advanced, and flips back.
+
+Useful flags: `--failover` to include section 7, `--keep` to leave the probe
+workflow running, `GLOBAL_NAMESPACE=...` to check a different namespace.
+
+The negative checks are the point. A cluster with TLS configured but not
+enforced passes every positive test.
+
+### By hand
 
 Start a workflow on cluster-a and look for it on cluster-b:
 
