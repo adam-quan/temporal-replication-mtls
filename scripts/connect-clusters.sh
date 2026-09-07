@@ -9,25 +9,19 @@
 #   docker compose -f docker-compose.cluster-b.yml up -d
 #   ./scripts/connect-clusters.sh
 #
-# Everything here talks to the *internal* frontend (port 7236) over mTLS rather
-# than the public frontend (7233). Two reasons:
-#
-#   * A replication stream carries no JWT, so the address each cluster
-#     registers for its peer has to be one that authenticates with
-#     certificates. Registering it through the same endpoint keeps the
-#     configuration honest.
-#   * It means this script does not need Keycloak, so cross-cluster replication
-#     can be exercised before scripts/setup-keycloak.sh has been run.
+# Everything here talks to each cluster's frontend over mTLS, which is also the
+# address the clusters register for each other - so what this script exercises
+# is the same path replication itself will use.
 set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "$0")/.." && pwd)
 NETWORK=${NETWORK:-temporal-network}
 ADMIN_TOOLS_IMAGE=${ADMIN_TOOLS_IMAGE:-temporalio/admin-tools:1.31.0}
 
-A_ADDR=${A_ADDR:-temporal:7236}
-B_ADDR=${B_ADDR:-temporal-b:7236}
-A_SERVER_NAME=${A_SERVER_NAME:-temporal-a.internal}
-B_SERVER_NAME=${B_SERVER_NAME:-temporal-b.internal}
+A_ADDR=${A_ADDR:-temporal:7233}
+B_ADDR=${B_ADDR:-temporal-b:7233}
+A_SERVER_NAME=${A_SERVER_NAME:-temporal}
+B_SERVER_NAME=${B_SERVER_NAME:-temporal-b}
 GLOBAL_NAMESPACE=${GLOBAL_NAMESPACE:-replicated}
 
 # temporal <cluster-a|cluster-b> <args...>
@@ -44,14 +38,14 @@ tctl() {
     --address "$addr" \
     --tls \
     --tls-ca-path /certs/ca/ca.pem \
-    --tls-cert-path "/certs/$cluster/internode.pem" \
-    --tls-key-path "/certs/$cluster/internode.key" \
+    --tls-cert-path "/certs/$cluster/client.pem" \
+    --tls-key-path "/certs/$cluster/client.key" \
     --tls-server-name "$name"
 }
 
 wait_for() {
   cluster=$1
-  echo "Waiting for $cluster internal frontend..."
+  echo "Waiting for $cluster frontend..."
   for _ in $(seq 1 60); do
     if tctl "$cluster" operator cluster health >/dev/null 2>&1; then
       echo "  $cluster is up"

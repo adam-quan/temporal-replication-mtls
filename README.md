@@ -1,8 +1,9 @@
-# Temporal: JWT Authentication + Cross-Cluster Replication over mTLS
+# Temporal: Cross-Cluster Replication over mTLS
 
 Two Temporal clusters running locally in Docker, replicating to each other over
-mutually-authenticated TLS, with Keycloak-issued JWTs guarding the public
-frontend of each one.
+mutually-authenticated TLS. Every caller - the Web UI, the CLI, the SDK, and
+the peer cluster's replication stream alike - authenticates with a client
+certificate. Keycloak signs people in to the Web UI.
 
 - `docker-compose.yml` - **cluster-a**, plus the shared Keycloak, Prometheus and Grafana
 - `docker-compose.cluster-b.yml` - **cluster-b**, the replication peer
@@ -17,7 +18,7 @@ frontend of each one.
 | | cluster-a | cluster-b |
 |---|---|---|
 | Frontend (gRPC) | `localhost:7233` | `localhost:8233` |
-| Internal frontend | `temporal:7236` | `temporal-b:7236` |
+| Internal frontend (system workers) | `temporal:7236` | `temporal-b:7236` |
 | Web UI | http://localhost:8080 | http://localhost:8081 |
 | Server metrics | http://localhost:8002/metrics | http://localhost:8003/metrics |
 | Elasticsearch | `localhost:9200` | `localhost:9201` |
@@ -38,42 +39,42 @@ its public one.
 
 <!-- diagram: architecture-topology -->
 ```mermaid
-flowchart LR
+flowchart TB
     subgraph HOST["Your machine"]
-        direction TB
+        direction LR
         BROWSER["Browser"]
         SDK["Python SDK<br/>worker · starter"]
     end
 
     subgraph CLB["cluster-b &nbsp;·&nbsp; docker-compose.cluster-b.yml"]
         direction TB
-        UIB["Web UI<br/>:8081"]
-        FB["frontend :7233<br/>host :8233<br/><b>mTLS + JWT</b>"]
-        IFB["internal-frontend :7236<br/><b>mTLS only</b>"]
+        UIB["Web UI :8081"]
+        FB["<b>frontend :7233</b><br/>host :8233<br/>mTLS · no token"]
         COREB["history · matching · worker"]
+        IFB["internal-frontend :7236<br/><i>system workers only</i>"]
         PGB[("PostgreSQL")]
         ESB[("Elasticsearch")]
     end
 
     subgraph CLA["cluster-a &nbsp;·&nbsp; docker-compose.yml"]
         direction TB
-        UIA["Web UI<br/>:8080"]
-        FA["frontend :7233<br/>host :7233<br/><b>mTLS + JWT</b>"]
-        IFA["internal-frontend :7236<br/><b>mTLS only</b>"]
+        UIA["Web UI :8080"]
+        FA["<b>frontend :7233</b><br/>host :7233<br/>mTLS · no token"]
         COREA["history · matching · worker"]
+        IFA["internal-frontend :7236<br/><i>system workers only</i>"]
         PGA[("PostgreSQL")]
         ESA[("Elasticsearch")]
     end
 
     subgraph SHARED["Shared"]
-        direction TB
-        PROM["Prometheus :9090<br/>Grafana :8085<br/>scrapes :8002 and :8003"]
-        KC["Keycloak :9080<br/>issues JWTs"]
+        direction LR
+        PROM["Prometheus :9090 · Grafana :8085<br/>scrapes :8002 and :8003"]
+        KC["Keycloak :9080<br/>signs users in to the Web UI"]
     end
 
+    BROWSER --> UIB
     BROWSER --> UIA
     SDK --> FA
-    BROWSER --> UIB
 
     UIA --> FA
     UIB --> FB
@@ -86,27 +87,31 @@ flowchart LR
     COREB --- PGB
     COREB --- ESB
 
-    COREA ==>|"replication"| IFB
-    COREB ==>|"replication"| IFA
+    COREA ==>|"replication"| FB
+    COREB ==>|"replication"| FA
 
-    FA -.->|JWKS| KC
-    FB -.->|JWKS| KC
+    UIA -.->|OIDC| KC
+    UIB -.->|OIDC| KC
 ```
 
 As a PNG: [docs/architecture-topology.png](docs/architecture-topology.png)
 
-Three kinds of connection, three different ways of proving who you are - all of
-them anchored in one self-signed root CA:
+Note where the replication streams land: on the peer's **frontend**, the same
+port the Web UI and the SDK use. That is only possible because the frontend
+authenticates by certificate and nothing else - see below.
+
+Two kinds of connection, both proving themselves with a certificate signed by
+the one self-signed root CA:
 
 <!-- diagram: architecture-trust -->
 ```mermaid
 flowchart TB
     CA(["Self-signed root CA · certs/ca/ca.pem<br/>signs every certificate below"])
 
-    subgraph P1["1 · A person or an app reaches the public frontend"]
+    subgraph P1["1 · Anything reaching a cluster from outside"]
         direction LR
-        C1["Web UI · CLI · Python SDK<br/>presents <b>client.pem</b><br/>+ a Keycloak JWT"]
-        S1["frontend :7233<br/>checks the certificate against the CA,<br/><b>then</b> checks the JWT"]
+        C1["Web UI · CLI · Python SDK<br/>presents <b>client.pem</b><br/><br/>the peer cluster's history service<br/>presents its <b>internode.pem</b>"]
+        S1["frontend :7233<br/>requireClientAuth: true<br/>verifies the chain to the CA<br/>and the serverName it was given"]
         C1 --> S1
     end
 
@@ -117,23 +122,17 @@ flowchart TB
         C2 --> S2
     end
 
-    subgraph P3["3 · One cluster reaches the other"]
-        direction LR
-        C3["cluster-a history<br/>presents <b>cluster-a/internode.pem</b>"]
-        S3["cluster-b internal-frontend :7236<br/>verifies serverName<br/><i>temporal-b.internal</i>"]
-        C3 --> S3
-    end
-
     CA -.-> P1
     CA -.-> P2
-    CA -.-> P3
 ```
 
 As a PNG: [docs/architecture-trust.png](docs/architecture-trust.png)
 
-Path 1 is the only one that involves a token. Paths 2 and 3 are certificates
-alone, which is what makes replication possible: a replication stream has no
-user behind it and no JWT to present.
+No token appears anywhere in either path. That is deliberate rather than a
+simplification: a replication stream has no user behind it and no way to obtain
+a JWT, so a frontend that demanded one would reject its peer and replication
+would never start. Keycloak still signs people in to the Web UI; it just no
+longer guards the Temporal API.
 
 The PNGs are generated *from* the Mermaid blocks above rather than maintained
 alongside them, so the two cannot drift apart:
@@ -149,22 +148,25 @@ alongside them, so the two cannot drift apart:
 
 ## How it fits together
 
-There are two different ways a caller proves who it is, on two different ports,
-and the split is the heart of this setup.
+**Everything external arrives on the frontend (7233)**: the Web UI, the CLI,
+the SDK samples, and the other cluster's replication stream. It runs with
+`requireClientAuth`, so every caller presents a certificate signed by the
+shared CA - and that certificate is the whole credential. There is no JWT
+authorizer on the Temporal API.
 
-**The public frontend (7233)** is what people and applications use. It requires
-*both* a client certificate and a Keycloak JWT. Neither alone gets you in.
+That last part is a constraint, not a preference. A replication stream has no
+user behind it and no way to obtain a token, so a frontend that demanded one
+would reject its peer and replication would never start. `clusterMetadata`
+registers each cluster at its own `:7233`, and that is the address the peer
+dials.
 
-**The internal frontend (7236)** is what machines use: this cluster's own
-system workers, and the peer cluster's replication stream. It runs without the
-JWT authorizer, because a replication stream has no user behind it and no token
-to carry. It is not open, though - it sits behind the internode TLS
-configuration, which sets `requireClientAuth`, so a caller still has to present
-a certificate signed by the shared CA. Certificates are the authentication
-mechanism between clusters; tokens are the authentication mechanism for people.
+**The internal frontend (7236)** carries this cluster's own system workers and
+nothing else, behind the same internode mTLS. It is a leftover convenience
+rather than a necessity now; dropping it from `TEMPORAL_SERVICES` and adding a
+`publicClient` section would work just as well.
 
-That is why `clusterMetadata.clusterInformation.<cluster>.rpcAddress` in each
-config points at port 7236 rather than 7233.
+**Keycloak** still signs people in to the Web UI. It just no longer guards the
+Temporal API.
 
 ### Certificates
 
@@ -175,7 +177,8 @@ both clusters trust:
 certs/ca/ca.pem                   root CA
 certs/cluster-a/internode.pem     cluster-a's internode + internal-frontend identity,
                                   and the client certificate it presents to cluster-b
-certs/cluster-a/frontend.pem      what the public frontend presents to clients
+certs/cluster-a/frontend.pem      what the frontend presents - to clients and to the
+                                  peer cluster alike
 certs/cluster-a/client.pem        what the Web UI, CLI and SDK present to the frontend
 certs/cluster-b/...               the same three for cluster-b
 ```
@@ -203,10 +206,8 @@ verified, not the address that was dialed:
 |---|---|
 | cluster-a internode (including its internal frontend) | `temporal-a.internal` |
 | cluster-b internode (including its internal frontend) | `temporal-b.internal` |
-| clients -> cluster-a public frontend | `temporal` |
-| clients -> cluster-b public frontend | `temporal-b` |
-| cluster-a -> cluster-b (replication) | `temporal-b.internal` |
-| cluster-b -> cluster-a (replication) | `temporal-a.internal` |
+| anything -> cluster-a frontend, replication included | `temporal` |
+| anything -> cluster-b frontend, replication included | `temporal-b` |
 
 The `.internal` names exist precisely because internode traffic dials container
 IPs off the membership ring. No certificate can enumerate the IPs a Docker
@@ -235,8 +236,8 @@ cp .env.example .env
 ./scripts/generate-certs.sh
 ```
 
-**2. Set up Keycloak.** Bring up just Keycloak, then create the realm, client,
-role, claim mapper and user that the servers expect:
+**2. Set up Keycloak.** Only the Web UI uses it - the Temporal API authenticates
+by certificate - but the UI containers will not start without the realm:
 
 ```bash
 docker compose up keycloak -d
@@ -281,14 +282,15 @@ Forty-odd assertions across seven areas, exiting non-zero if any of them fail:
 
 1. **Certificates** - every leaf chains to the CA, is not about to expire, and
    carries the extended key usages and SANs its role needs.
-2. **mTLS on the internal frontend**, the endpoint replication actually uses.
+2. **mTLS on the frontend**, the endpoint replication actually uses.
    Both the positive case and three negative ones: no client certificate,
    plaintext gRPC, and a well-formed certificate signed by an untrusted CA. The
    last one matters most - it is the difference between "a certificate is
    required" and "*your* certificate is required".
-3. **The public frontend** still wants both doors unlocked: it serves the right
-   certificate, asks callers for one, and rejects a valid certificate that
-   arrives without a JWT.
+3. **The frontend as published on the host** serves the right certificate, asks
+   callers for one, and *accepts* a certificate with no token - the property
+   that lets a replication stream in. If that check ever starts failing with
+   "unauthorized", an authorizer has come back and replication is broken.
 4. **Cluster registration** - each side sees both clusters, at the expected
    addresses, with connections enabled and distinct initial failover versions.
 5. **Namespace replication** - the global namespace exists on both sides and is
@@ -314,19 +316,19 @@ Start a workflow on cluster-a and look for it on cluster-b:
 ```bash
 docker exec temporal-admin-tools temporal workflow start \
   -n replicated --task-queue xdc-demo --type Smoke --workflow-id smoke-1 \
-  --address temporal:7236 --tls \
+  --address temporal:7233 --tls \
   --tls-ca-path /etc/temporal/certs/ca/ca.pem \
-  --tls-cert-path /etc/temporal/certs/cluster-a/internode.pem \
-  --tls-key-path /etc/temporal/certs/cluster-a/internode.key \
-  --tls-server-name temporal-a.internal
+  --tls-cert-path /etc/temporal/certs/cluster-a/client.pem \
+  --tls-key-path /etc/temporal/certs/cluster-a/client.key \
+  --tls-server-name temporal
 
 docker exec temporal-b-admin-tools temporal workflow describe \
   -n replicated -w smoke-1 \
-  --address temporal-b:7236 --tls \
+  --address temporal-b:7233 --tls \
   --tls-ca-path /etc/temporal/certs/ca/ca.pem \
-  --tls-cert-path /etc/temporal/certs/cluster-b/internode.pem \
-  --tls-key-path /etc/temporal/certs/cluster-b/internode.key \
-  --tls-server-name temporal-b.internal
+  --tls-cert-path /etc/temporal/certs/cluster-b/client.pem \
+  --tls-key-path /etc/temporal/certs/cluster-b/client.key \
+  --tls-server-name temporal-b
 ```
 
 The same run ID should appear on both sides within a second or two.
@@ -336,11 +338,11 @@ To fail the namespace over to cluster-b:
 ```bash
 docker exec temporal-b-admin-tools temporal operator namespace update \
   -n replicated --active-cluster cluster-b \
-  --address temporal-b:7236 --tls \
+  --address temporal-b:7233 --tls \
   --tls-ca-path /etc/temporal/certs/ca/ca.pem \
-  --tls-cert-path /etc/temporal/certs/cluster-b/internode.pem \
-  --tls-key-path /etc/temporal/certs/cluster-b/internode.key \
-  --tls-server-name temporal-b.internal
+  --tls-cert-path /etc/temporal/certs/cluster-b/client.pem \
+  --tls-key-path /etc/temporal/certs/cluster-b/client.key \
+  --tls-server-name temporal-b
 ```
 
 ## Python SDK example
@@ -354,9 +356,8 @@ pip install temporalio python-keycloak python-dotenv
 - Start the worker: `python3 worker.py`
 - Start the workflow: `python3 simple_workflow.py`
 
-Both connect to cluster-a's public frontend, so they present
-`certs/cluster-a/client.pem` alongside the Keycloak JWT. To point them at
-cluster-b instead:
+Both connect to cluster-a's frontend and present `certs/cluster-a/client.pem`;
+no token is involved. To point them at cluster-b instead:
 
 ```bash
 TEMPORAL_ADDRESS=localhost:8233 \

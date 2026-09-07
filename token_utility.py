@@ -1,3 +1,15 @@
+"""Keycloak JWT helpers.
+
+Nothing imports this any more. The Temporal frontends authenticate callers by
+client certificate alone, because cross-cluster replication has no user behind
+it and no token to present, so the JWT authorizer had to go.
+
+Kept because the Web UI still signs users in through the same Keycloak realm,
+and because re-enabling server-side JWT auth is a matter of restoring the
+`authorization` block in both config.yaml files and passing
+`rpc_metadata={"authorization": f"Bearer {jwt}"}` to Client.connect again.
+"""
+
 import asyncio
 import os
 

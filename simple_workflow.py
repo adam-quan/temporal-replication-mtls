@@ -2,7 +2,6 @@ import asyncio
 from datetime import timedelta
 from temporalio import activity, workflow
 from temporalio.client import Client
-import token_utility
 import tls_utility
 
 # 1. Define the Activity (Your business logic)
@@ -24,20 +23,15 @@ class SimpleWorkflow:
 
 # 3. Main runner to spin up a worker and execute the workflow
 async def main():
-    # 1. Fetch initial token data to establish the connection
-    print("Fetching initial token from Keycloak...")
-    initial_token_data = await token_utility.fetch_keycloak_token_info()
-    initial_jwt = initial_token_data["access_token"]
-
-    # 2. Instantiate the Temporal client
+    # 1. Instantiate the Temporal client. The frontend authenticates callers
+    #    by client certificate, so the certificate is the whole credential.
     client = await Client.connect(
         tls_utility.TEMPORAL_ADDRESS,
         namespace=tls_utility.TEMPORAL_NAMESPACE,
         tls=tls_utility.tls_config(),
-        rpc_metadata={"authorization": f"Bearer {initial_jwt}"}
     )
 
-    # 3. Execute the workflow synchronously and print the result
+    # 2. Execute the workflow synchronously and print the result
     result = await client.execute_workflow(
         SimpleWorkflow.run,
         "World",

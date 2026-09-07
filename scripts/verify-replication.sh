@@ -20,13 +20,14 @@ NETWORK=${NETWORK:-temporal-network}
 IMAGE=${ADMIN_TOOLS_IMAGE:-temporalio/admin-tools:1.31.0}
 NAMESPACE=${GLOBAL_NAMESPACE:-replicated}
 
-# Internal frontends: reachable only on the Docker network, mTLS, no JWT.
-A_ADDR=${A_ADDR:-temporal:7236}
-B_ADDR=${B_ADDR:-temporal-b:7236}
-A_SN=${A_SN:-temporal-a.internal}
-B_SN=${B_SN:-temporal-b.internal}
+# Frontends, as seen from inside the Docker network. This is the address the
+# clusters register for each other, so it is the replication path too.
+A_ADDR=${A_ADDR:-temporal:7233}
+B_ADDR=${B_ADDR:-temporal-b:7233}
+A_SN=${A_SN:-temporal}
+B_SN=${B_SN:-temporal-b}
 
-# Public frontends: published to the host, mTLS *and* JWT.
+# The same frontends as published on the host.
 A_PUBLIC=${A_PUBLIC:-localhost:7233}
 B_PUBLIC=${B_PUBLIC:-localhost:8233}
 A_PUBLIC_SN=${A_PUBLIC_SN:-temporal}
@@ -108,8 +109,8 @@ TLS_REFUSED='certificate required|bad certificate|handshake|broken pipe|connecti
 
 # --- CLI wrappers ------------------------------------------------------------
 
-# Full mTLS against a cluster's internal frontend, using that cluster's own
-# internode certificate. This is the same identity the peer cluster presents.
+# Full mTLS against a cluster's frontend, using that cluster's client
+# certificate.
 cli() {
   cluster=$1; shift
   case $cluster in
@@ -120,8 +121,8 @@ cli() {
   docker run --rm --network "$NETWORK" -v "$CERTS_DIR:/certs:ro" "$IMAGE" temporal "$@" \
     --address "$addr" --tls \
     --tls-ca-path /certs/ca/ca.pem \
-    --tls-cert-path "/certs/$cluster/internode.pem" \
-    --tls-key-path "/certs/$cluster/internode.key" \
+    --tls-cert-path "/certs/$cluster/client.pem" \
+    --tls-key-path "/certs/$cluster/client.key" \
     --tls-server-name "$sn"
 }
 
@@ -231,9 +232,10 @@ else
     fi
   done
 
-  # Each internode certificate must carry the name its peer pins as serverName,
-  # or host verification fails at handshake time.
-  for pair in "cluster-a $A_SN" "cluster-b $B_SN"; do
+  # Each internode certificate must carry the name this cluster's own services
+  # pin as serverName, or intra-cluster host verification fails at handshake
+  # time.
+  for pair in "cluster-a temporal-a.internal" "cluster-b temporal-b.internal"; do
     set -- $pair
     if openssl x509 -in "$CERTS_DIR/$1/internode.pem" -noout -ext subjectAltName 2>/dev/null \
        | grep -q "DNS:$2"; then
@@ -242,10 +244,22 @@ else
       fail "$1/internode.pem covers the pinned serverName '$2'"
     fi
   done
+
+  # And each frontend certificate must cover the name the *peer cluster* pins,
+  # since replication now terminates on the frontend.
+  for pair in "cluster-a $A_SN" "cluster-b $B_SN"; do
+    set -- $pair
+    if openssl x509 -in "$CERTS_DIR/$1/frontend.pem" -noout -ext subjectAltName 2>/dev/null \
+       | grep -q "DNS:$2"; then
+      pass "$1/frontend.pem covers '$2', the name its peer pins for replication"
+    else
+      fail "$1/frontend.pem covers '$2', the name its peer pins for replication"
+    fi
+  done
 fi
 
 # --- 2. mTLS on the replication endpoint -------------------------------------
-section "2. mTLS on the internal frontend (the replication endpoint)"
+section "2. mTLS on the frontend (the replication endpoint)"
 
 check "cluster-a accepts a valid client certificate" "cluster-a" \
   cli cluster-a operator cluster describe
@@ -278,7 +292,7 @@ else
 fi
 
 # --- 3. The public frontend keeps both doors locked ---------------------------
-section "3. Public frontend: certificate AND token"
+section "3. The frontend as published on the host"
 
 for pair in "cluster-a $A_PUBLIC $A_PUBLIC_SN" "cluster-b $B_PUBLIC $B_PUBLIC_SN"; do
   set -- $pair
@@ -301,9 +315,10 @@ for pair in "cluster-a $A_PUBLIC $A_PUBLIC_SN" "cluster-b $B_PUBLIC $B_PUBLIC_SN
     fail "$cluster requests a client certificate"
   fi
 
-  # Certificate accepted, but the JWT authorizer still applies. Reaching
-  # "unauthorized" is the proof that TLS succeeded and authorization ran.
-  check_rejected "$cluster rejects a valid certificate with no JWT" "unauthorized" \
+  # A certificate is now the whole credential: no authorizer runs behind it,
+  # which is what lets a replication stream in. If this ever starts failing
+  # with "unauthorized", an authorizer has come back and replication is broken.
+  check "$cluster accepts a client certificate with no token" "" \
     cli_public "$cluster" operator namespace list
 done
 

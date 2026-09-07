@@ -104,9 +104,9 @@ services:
       - ES_VIS_INDEX=temporal_visibility_v1_dev
       - DYNAMIC_CONFIG_FILE_PATH=/etc/temporal/config/dynamicconfig/development-sql.yaml
       - PROMETHEUS_ENDPOINT=0.0.0.0:8002
-      # Same Keycloak realm as cluster-a, so one JWT works against either
-      # cluster's public frontend.
-      - TEMPORAL_JWT_KEY_SOURCE1=http://keycloak:9080/realms/temporal/protocol/openid-connect/certs
+      # Client certificates are the only credential the frontend accepts, so
+      # the server needs to be told the missing authorizer is deliberate.
+      - TEMPORAL_ALLOW_NO_AUTH=true
       - TEMPORAL_SERVICES=frontend,matching,worker,history,internal-frontend
     image: temporalio/server:${TEMPORAL_VERSION}
     ports:
@@ -131,10 +131,6 @@ services:
     environment:
       - TEMPORAL_ADDRESS=temporal-b:7233
       - DEFAULT_NAMESPACE=default
-      - KEYCLOAK_URL=http://keycloak:9080
-      - KEYCLOAK_REALM=temporal
-      - KEYCLOAK_CLIENT_ID=temporal-app
-      - KEYCLOAK_CLIENT_SECRET=${KEYCLOAK_CLIENT_SECRET}
       - TEMPORAL_TLS_CA_PATH=/etc/temporal/certs/ca/ca.pem
       - TEMPORAL_TLS_CERT_PATH=/etc/temporal/certs/cluster-b/client.pem
       - TEMPORAL_TLS_KEY_PATH=/etc/temporal/certs/cluster-b/client.key

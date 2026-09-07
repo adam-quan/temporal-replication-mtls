@@ -87,7 +87,9 @@ services:
       - ES_VIS_INDEX=temporal_visibility_v1_dev
       - DYNAMIC_CONFIG_FILE_PATH=/etc/temporal/config/dynamicconfig/development-sql.yaml
       - PROMETHEUS_ENDPOINT=0.0.0.0:8002
-      - TEMPORAL_JWT_KEY_SOURCE1=http://keycloak:9080/realms/temporal/protocol/openid-connect/certs
+      # Client certificates are the only credential the frontend accepts, so
+      # the server needs to be told the missing authorizer is deliberate.
+      - TEMPORAL_ALLOW_NO_AUTH=true
       - TEMPORAL_SERVICES=frontend,matching,worker,history,internal-frontend
     image: temporalio/server:${TEMPORAL_VERSION}
     ports:
@@ -109,17 +111,9 @@ services:
     restart: on-failure:5
     depends_on:
       - temporal
-      - keycloak
     environment:
       - TEMPORAL_ADDRESS=temporal:7233
       - DEFAULT_NAMESPACE=default
-      # Used to mint a JWT for the operator calls, since the server runs with
-      # JWT authorization enabled.
-      - KEYCLOAK_URL=http://keycloak:9080
-      - KEYCLOAK_REALM=temporal
-      - KEYCLOAK_CLIENT_ID=temporal-app
-      - KEYCLOAK_CLIENT_SECRET=${KEYCLOAK_CLIENT_SECRET}
-      # The public frontend now requires a client certificate as well as a JWT.
       - TEMPORAL_TLS_CA_PATH=/etc/temporal/certs/ca/ca.pem
       - TEMPORAL_TLS_CERT_PATH=/etc/temporal/certs/cluster-a/client.pem
       - TEMPORAL_TLS_KEY_PATH=/etc/temporal/certs/cluster-a/client.key
@@ -137,9 +131,7 @@ services:
     depends_on:
       - temporal
     environment:
-      # Public frontend: mTLS, and every call also needs a JWT (mint one with
-      # scripts/create-namespace.sh's fetch_token, or use the internal
-      # frontend below).
+      # The frontend authenticates callers by certificate alone.
       - TEMPORAL_ADDRESS=temporal:7233
       - TEMPORAL_CLI_ADDRESS=temporal:7233
       - TEMPORAL_TLS_CA_PATH=/etc/temporal/certs/ca/ca.pem

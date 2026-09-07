@@ -58,9 +58,8 @@ global:
 
         # ------------------------------------------------------------------
         # internode: history <-> matching <-> internal-frontend within this
-        # cluster, and - importantly - the listener that cluster-a's
-        # replication stack dials. requireClientAuth makes it mutual: a peer
-        # gets nowhere without a certificate signed by the shared CA.
+        # cluster. Purely intra-cluster traffic - cross-cluster replication
+        # goes to the frontend below.
         # ------------------------------------------------------------------
         internode:
             server:
@@ -80,9 +79,12 @@ global:
                     - {{ env "CERTS_DIR" }}/ca/ca.pem
 
         # ------------------------------------------------------------------
-        # frontend: the public gRPC port that the Web UI, the CLI and the SDK
-        # samples connect to. Also mutual - every external client presents
-        # certs/cluster-b/client.pem.
+        # frontend: the gRPC port everything external connects to - the Web
+        # UI, the CLI, the SDK samples, and cluster-a's replication stack.
+        # requireClientAuth makes it mutual, so a caller gets nowhere without
+        # a certificate signed by the shared CA. There is no JWT authorizer:
+        # a replication stream has no user behind it and no token to present,
+        # so certificates are the only credential this port accepts.
         # ------------------------------------------------------------------
         frontend:
             server:
@@ -114,7 +116,7 @@ global:
                     certFile: {{ env "CERTS_DIR" }}/cluster-b/internode.pem
                     keyFile: {{ env "CERTS_DIR" }}/cluster-b/internode.key
                 client:
-                    serverName: temporal-a.internal
+                    serverName: temporal
                     rootCaFiles:
                         - {{ env "CERTS_DIR" }}/ca/ca.pem
 
@@ -123,14 +125,6 @@ global:
             timerType: histogram
             listenAddress: "{{ default "0.0.0.0:8002" (env "PROMETHEUS_ENDPOINT") }}"
 
-    authorization:
-        jwtKeyProvider:
-            keySourceURIs:
-                - {{ env "TEMPORAL_JWT_KEY_SOURCE1" }}
-            refreshInterval: {{ default "1m" (env "TEMPORAL_JWT_KEY_REFRESH") }}
-        permissionsClaimName: permissions
-        authorizer: default
-        claimMapper: default
 
 services:
     frontend:
@@ -140,11 +134,11 @@ services:
             bindOnIP: "{{ default "127.0.0.1" (env "BIND_ON_IP") }}"
             httpPort: 7243
 
-    # The internal frontend deliberately runs without the JWT authorizer, which
-    # is what makes it usable for traffic that has no user behind it: this
-    # cluster's own system workers, and cluster-a's replication stream. It is
-    # not unprotected - it sits behind the internode mTLS above, so the caller
-    # still has to prove itself with a certificate.
+    # The internal frontend carries this cluster's own system workers, and
+    # nothing else - cross-cluster replication uses the frontend above. With
+    # no authorizer left on the frontend it earns its keep only by keeping
+    # system traffic off the public port; drop it from TEMPORAL_SERVICES and
+    # add a publicClient section if you would rather not run it.
     internal-frontend:
         rpc:
             grpcPort: 7236
@@ -186,9 +180,8 @@ services:
 # instead would fail, because a cluster refuses to start until every name it
 # mentions is one it already knows.
 #
-# rpcAddress points at the *internal* frontend for the reason given above: a
-# replication stream carries no JWT, so it has to land on the listener that
-# authenticates with certificates rather than tokens.
+# rpcAddress is the address cluster-a dials to replicate: this cluster's
+# frontend, authenticated with certificates alone.
 # ----------------------------------------------------------------------------
 clusterMetadata:
     enableGlobalNamespace: true
@@ -200,8 +193,8 @@ clusterMetadata:
             enabled: true
             initialFailoverVersion: 2
             rpcName: "frontend"
-            rpcAddress: "temporal-b:7236"
-            httpAddress: "temporal-b:7246"
+            rpcAddress: "temporal-b:7233"
+            httpAddress: "temporal-b:7243"
 
 # Forward the API calls that must run against the active cluster (workflow
 # starts, signals, task polls) when they arrive at the standby side.
