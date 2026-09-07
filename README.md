@@ -11,6 +11,7 @@ frontend of each one.
 - `scripts/setup-keycloak.sh` - the Keycloak realm, client, role, claim mapper and user
 - `scripts/connect-clusters.sh` - joins the two clusters and creates a global namespace
 - `scripts/verify-replication.sh` - checks that replication *and* mTLS are actually working
+- `scripts/render-diagrams.sh` - regenerates the PNGs under `docs/` from the diagrams below
 - `scripts/test.sh` - quick smoke check of both clusters' TLS and cluster lists
 
 | | cluster-a | cluster-b |
@@ -35,6 +36,7 @@ The thick lines are the replication streams. Note where they land: each
 cluster's history service dials the *other* cluster's internal frontend, never
 its public one.
 
+<!-- diagram: architecture-topology -->
 ```mermaid
 flowchart LR
     subgraph HOST["Your machine"]
@@ -91,9 +93,12 @@ flowchart LR
     FB -.->|JWKS| KC
 ```
 
+As a PNG: [docs/architecture-topology.png](docs/architecture-topology.png)
+
 Three kinds of connection, three different ways of proving who you are - all of
 them anchored in one self-signed root CA:
 
+<!-- diagram: architecture-trust -->
 ```mermaid
 flowchart TB
     CA(["Self-signed root CA · certs/ca/ca.pem<br/>signs every certificate below"])
@@ -124,9 +129,18 @@ flowchart TB
     CA -.-> P3
 ```
 
+As a PNG: [docs/architecture-trust.png](docs/architecture-trust.png)
+
 Path 1 is the only one that involves a token. Paths 2 and 3 are certificates
 alone, which is what makes replication possible: a replication stream has no
 user behind it and no JWT to present.
+
+The PNGs are generated *from* the Mermaid blocks above rather than maintained
+alongside them, so the two cannot drift apart:
+
+```bash
+./scripts/render-diagrams.sh   # needs Node; downloads mermaid-cli on first run
+```
 
 ## Prerequisites
 
