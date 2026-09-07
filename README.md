@@ -25,6 +25,109 @@ frontend of each one.
 Shared by both: Keycloak (http://localhost:9080), Prometheus
 (http://localhost:9090), Grafana (http://localhost:8085).
 
+## Architecture
+
+Each cluster is one `temporal` container running all five server roles, with
+its own PostgreSQL and Elasticsearch behind it. The two clusters share a Docker
+network, a Keycloak, and a Prometheus/Grafana pair.
+
+The thick lines are the replication streams. Note where they land: each
+cluster's history service dials the *other* cluster's internal frontend, never
+its public one.
+
+```mermaid
+flowchart LR
+    subgraph HOST["Your machine"]
+        direction TB
+        BROWSER["Browser"]
+        SDK["Python SDK<br/>worker · starter"]
+    end
+
+    subgraph CLB["cluster-b &nbsp;·&nbsp; docker-compose.cluster-b.yml"]
+        direction TB
+        UIB["Web UI<br/>:8081"]
+        FB["frontend :7233<br/>host :8233<br/><b>mTLS + JWT</b>"]
+        IFB["internal-frontend :7236<br/><b>mTLS only</b>"]
+        COREB["history · matching · worker"]
+        PGB[("PostgreSQL")]
+        ESB[("Elasticsearch")]
+    end
+
+    subgraph CLA["cluster-a &nbsp;·&nbsp; docker-compose.yml"]
+        direction TB
+        UIA["Web UI<br/>:8080"]
+        FA["frontend :7233<br/>host :7233<br/><b>mTLS + JWT</b>"]
+        IFA["internal-frontend :7236<br/><b>mTLS only</b>"]
+        COREA["history · matching · worker"]
+        PGA[("PostgreSQL")]
+        ESA[("Elasticsearch")]
+    end
+
+    subgraph SHARED["Shared"]
+        direction TB
+        PROM["Prometheus :9090<br/>Grafana :8085<br/>scrapes :8002 and :8003"]
+        KC["Keycloak :9080<br/>issues JWTs"]
+    end
+
+    BROWSER --> UIA
+    SDK --> FA
+    BROWSER --> UIB
+
+    UIA --> FA
+    UIB --> FB
+    FA --> COREA
+    FB --> COREB
+    COREA --> IFA
+    COREB --> IFB
+    COREA --- PGA
+    COREA --- ESA
+    COREB --- PGB
+    COREB --- ESB
+
+    COREA ==>|"replication"| IFB
+    COREB ==>|"replication"| IFA
+
+    FA -.->|JWKS| KC
+    FB -.->|JWKS| KC
+```
+
+Three kinds of connection, three different ways of proving who you are - all of
+them anchored in one self-signed root CA:
+
+```mermaid
+flowchart TB
+    CA(["Self-signed root CA · certs/ca/ca.pem<br/>signs every certificate below"])
+
+    subgraph P1["1 · A person or an app reaches the public frontend"]
+        direction LR
+        C1["Web UI · CLI · Python SDK<br/>presents <b>client.pem</b><br/>+ a Keycloak JWT"]
+        S1["frontend :7233<br/>checks the certificate against the CA,<br/><b>then</b> checks the JWT"]
+        C1 --> S1
+    end
+
+    subgraph P2["2 · Services inside one cluster"]
+        direction LR
+        C2["history · matching · worker<br/>presents <b>internode.pem</b>"]
+        S2["internal-frontend :7236<br/>verifies serverName<br/><i>temporal-a.internal</i>"]
+        C2 --> S2
+    end
+
+    subgraph P3["3 · One cluster reaches the other"]
+        direction LR
+        C3["cluster-a history<br/>presents <b>cluster-a/internode.pem</b>"]
+        S3["cluster-b internal-frontend :7236<br/>verifies serverName<br/><i>temporal-b.internal</i>"]
+        C3 --> S3
+    end
+
+    CA -.-> P1
+    CA -.-> P2
+    CA -.-> P3
+```
+
+Path 1 is the only one that involves a token. Paths 2 and 3 are certificates
+alone, which is what makes replication possible: a replication stream has no
+user behind it and no JWT to present.
+
 ## Prerequisites
 
 - [Docker](https://docs.docker.com/engine/install/) (includes Docker Compose)
