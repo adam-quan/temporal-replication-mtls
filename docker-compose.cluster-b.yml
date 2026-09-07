@@ -1,0 +1,203 @@
+# Second Temporal cluster ("cluster-b"), the replication peer of the cluster in
+# docker-compose.yml.
+#
+# It brings its own PostgreSQL, Elasticsearch, server and Web UI, but joins the
+# network created by the first cluster and reuses that stack's Keycloak,
+# Prometheus and Grafana. Start cluster-a first:
+#
+#   docker compose up -d
+#   docker compose -f docker-compose.cluster-b.yml up -d
+#   ./scripts/connect-clusters.sh
+#
+# Host ports are offset so both clusters can run side by side:
+#
+#            cluster-a   cluster-b
+#   frontend      7233        8233
+#   metrics       8002        8003
+#   Web UI        8080        8081
+#   Elastic       9200        9201
+
+name: temporal-cluster-b
+
+services:
+  elasticsearch-b:
+    container_name: temporal-elasticsearch-b
+    environment:
+      - discovery.type=single-node
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      - xpack.security.enabled=false
+    image: elasticsearch:${ELASTICSEARCH_VERSION}
+    ports:
+      - published: 9201
+        target: 9200
+    networks:
+      - temporal-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=1s || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+
+  postgresql-b:
+    container_name: temporal-postgresql-b
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_USER: ${POSTGRES_USER}
+    image: postgres:${POSTGRESQL_VERSION}
+    expose:
+      - ${POSTGRES_DEFAULT_PORT}
+    volumes:
+      - /var/lib/postgresql/data
+    networks:
+      - temporal-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+
+  temporal-b-setup:
+    image: temporalio/admin-tools:${TEMPORAL_ADMINTOOLS_VERSION}
+    container_name: temporal-b-setup
+    restart: on-failure:6
+    depends_on:
+      postgresql-b:
+        condition: service_healthy
+      elasticsearch-b:
+        condition: service_healthy
+    environment:
+      - DB=postgres12
+      - DB_PORT=${POSTGRES_DEFAULT_PORT}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PWD=${POSTGRES_PASSWORD}
+      - POSTGRES_SEEDS=postgresql-b
+      - SQL_PASSWORD=${POSTGRES_PASSWORD}
+      - ES_HOST=elasticsearch-b
+      - ES_PORT=9200
+      - ES_SCHEME=http
+      - ES_VERSION=v7
+      - ES_VISIBILITY_INDEX=temporal_visibility_v1_dev
+    networks:
+      - temporal-network
+    volumes:
+      - ./scripts:/scripts
+    entrypoint: ["/bin/sh"]
+    command: /scripts/setup-postgres-es.sh
+
+  temporal-b:
+    container_name: temporal-b
+    depends_on:
+      - temporal-b-setup
+    environment:
+      - TEMPORAL_SERVER_CONFIG_FILE_PATH=/etc/temporal/config/config.yaml
+      - CERTS_DIR=/etc/temporal/certs
+      - POSTGRES_SEEDS=postgresql-b
+      - DB_PORT=${POSTGRES_DEFAULT_PORT}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PWD=${POSTGRES_PASSWORD}
+      - ES_SEEDS=elasticsearch-b
+      - ES_PORT=9200
+      - ES_SCHEME=http
+      - ES_VERSION=v7
+      - ES_VIS_INDEX=temporal_visibility_v1_dev
+      - DYNAMIC_CONFIG_FILE_PATH=/etc/temporal/config/dynamicconfig/development-sql.yaml
+      - PROMETHEUS_ENDPOINT=0.0.0.0:8002
+      # Same Keycloak realm as cluster-a, so one JWT works against either
+      # cluster's public frontend.
+      - TEMPORAL_JWT_KEY_SOURCE1=http://keycloak:9080/realms/temporal/protocol/openid-connect/certs
+      - TEMPORAL_SERVICES=frontend,matching,worker,history,internal-frontend
+    image: temporalio/server:${TEMPORAL_VERSION}
+    ports:
+      - published: 8233
+        target: 7233
+      - published: 8003
+        target: 8002
+    restart: on-failure
+    volumes:
+      - ./dynamicconfig:/etc/temporal/config/dynamicconfig
+      - ./config/cluster-b/config.yaml:/etc/temporal/config/config.yaml:ro
+      - ./certs:/etc/temporal/certs:ro
+    networks:
+      - temporal-network
+
+  temporal-b-create-namespace:
+    image: temporalio/admin-tools:${TEMPORAL_ADMINTOOLS_VERSION}
+    container_name: temporal-b-create-namespace
+    restart: on-failure:5
+    depends_on:
+      - temporal-b
+    environment:
+      - TEMPORAL_ADDRESS=temporal-b:7233
+      - DEFAULT_NAMESPACE=default
+      - KEYCLOAK_URL=http://keycloak:9080
+      - KEYCLOAK_REALM=temporal
+      - KEYCLOAK_CLIENT_ID=temporal-app
+      - KEYCLOAK_CLIENT_SECRET=${KEYCLOAK_CLIENT_SECRET}
+      - TEMPORAL_TLS_CA_PATH=/etc/temporal/certs/ca/ca.pem
+      - TEMPORAL_TLS_CERT_PATH=/etc/temporal/certs/cluster-b/client.pem
+      - TEMPORAL_TLS_KEY_PATH=/etc/temporal/certs/cluster-b/client.key
+      - TEMPORAL_TLS_SERVER_NAME=temporal-b
+    networks:
+      - temporal-network
+    volumes:
+      - ./scripts:/scripts
+      - ./certs:/etc/temporal/certs:ro
+    entrypoint: ["/bin/sh"]
+    command: /scripts/create-namespace.sh
+
+  temporal-b-admin-tools:
+    container_name: temporal-b-admin-tools
+    depends_on:
+      - temporal-b
+    environment:
+      - TEMPORAL_ADDRESS=temporal-b:7233
+      - TEMPORAL_CLI_ADDRESS=temporal-b:7233
+      - TEMPORAL_TLS_CA_PATH=/etc/temporal/certs/ca/ca.pem
+      - TEMPORAL_TLS_CERT_PATH=/etc/temporal/certs/cluster-b/client.pem
+      - TEMPORAL_TLS_KEY_PATH=/etc/temporal/certs/cluster-b/client.key
+      - TEMPORAL_TLS_SERVER_NAME=temporal-b
+    image: temporalio/admin-tools:${TEMPORAL_ADMINTOOLS_VERSION}
+    stdin_open: true
+    tty: true
+    networks:
+      - temporal-network
+    volumes:
+      - ./certs:/etc/temporal/certs:ro
+      - ./scripts:/scripts
+
+  temporal-b-ui:
+    container_name: temporal-b-ui
+    depends_on:
+      - temporal-b
+    environment:
+      - TEMPORAL_CORS_ORIGINS=http://localhost:3000
+      - TEMPORAL_CSRF_COOKIE_INSECURE=true
+      - TEMPORAL_CLI_ADDRESS=temporal-b:7233
+      - TEMPORAL_ADDRESS=temporal-b:7233
+      - TEMPORAL_AUTH_ENABLED=true
+      - TEMPORAL_AUTH_PROVIDER_URL=http://keycloak:9080/realms/temporal
+      - TEMPORAL_AUTH_CLIENT_ID=temporal-app
+      - TEMPORAL_AUTH_CLIENT_SECRET=${KEYCLOAK_CLIENT_SECRET}
+      - TEMPORAL_AUTH_CALLBACK_URL=http://localhost:8081/auth/sso/callback
+      - TEMPORAL_AUTH_SCOPES=openid,profile,email
+      - TEMPORAL_TLS_CA=/etc/temporal/certs/ca/ca.pem
+      - TEMPORAL_TLS_CERT=/etc/temporal/certs/cluster-b/client.pem
+      - TEMPORAL_TLS_KEY=/etc/temporal/certs/cluster-b/client.key
+      - TEMPORAL_TLS_ENABLE_HOST_VERIFICATION=true
+      - TEMPORAL_TLS_SERVER_NAME=temporal-b
+    image: temporalio/ui:${TEMPORAL_UI_VERSION}
+    ports:
+      - 8081:8080
+    networks:
+      - temporal-network
+    volumes:
+      - ./certs:/etc/temporal/certs:ro
+
+networks:
+  # Created by docker-compose.yml, so bring cluster-a up first. If you want
+  # cluster-b on its own, run `docker network create temporal-network`.
+  temporal-network:
+    external: true
+    name: temporal-network
