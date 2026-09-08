@@ -1,8 +1,8 @@
 # Temporal: Cross-Cluster Replication over mTLS
 
 Two Temporal clusters running locally in Docker, replicating to each other over
-mutually-authenticated TLS. Every caller - the Web UI, the CLI, the SDK, and
-the peer cluster's replication stream alike - authenticates with a client
+mutually-authenticated TLS (mTLS). Every caller - the Web UI, the CLI, the SDK, and
+the peer cluster's replication stream - authenticates with a client
 certificate. Keycloak signs people in to the Web UI.
 
 - `docker-compose.yml` - **cluster-a**, plus the shared Keycloak, Prometheus and Grafana
@@ -12,8 +12,6 @@ certificate. Keycloak signs people in to the Web UI.
 - `scripts/setup-keycloak.sh` - the Keycloak realm, client, role, claim mapper and user
 - `scripts/connect-clusters.sh` - joins the two clusters and creates a global namespace
 - `scripts/verify-replication.sh` - checks that replication *and* mTLS are actually working
-- `scripts/render-diagrams.sh` - regenerates the PNGs under `docs/` from the diagrams below
-- `scripts/test.sh` - quick smoke check of both clusters' TLS and cluster lists
 
 | | cluster-a | cluster-b |
 |---|---|---|
@@ -140,8 +138,8 @@ As a PNG: [docs/architecture-trust.png](docs/architecture-trust.png)
 No token appears anywhere in either path. That is deliberate rather than a
 simplification: a replication stream has no user behind it and no way to obtain
 a JWT, so a frontend that demanded one would reject its peer and replication
-would never start. Keycloak still signs people in to the Web UI; it just no
-longer guards the Temporal API.
+would never start. Keycloak still signs people in to the Web UI; it just does not
+guards the Temporal API.
 
 The PNGs are generated *from* the Mermaid blocks above rather than maintained
 alongside them, so the two cannot drift apart:
@@ -235,7 +233,7 @@ The hostnames are overridable at generation time - `CLUSTER_A_INTERNAL_NAME`,
 
 ```bash
 git clone <this repo>
-cd temporal-replication
+cd temporal-replication-mtls
 cp .env.example .env
 ```
 
@@ -359,7 +357,7 @@ docker exec temporal-b-admin-tools temporal operator namespace update \
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install temporalio python-keycloak python-dotenv
+pip install temporalio python-dotenv
 ```
 
 - Start the worker: `python3 worker.py`

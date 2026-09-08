@@ -4,7 +4,7 @@ from temporalio import activity, workflow
 from temporalio.client import Client
 import tls_utility
 
-# 1. Define the Activity (Your business logic)
+# 1. Define the Activity (Business logic)
 @activity.defn
 async def say_hello_activity(name: str) -> str:
     return f"Hello, {name}!"
