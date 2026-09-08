@@ -33,9 +33,8 @@ Each cluster is one `temporal` container running all five server roles, with
 its own PostgreSQL and Elasticsearch behind it. The two clusters share a Docker
 network, a Keycloak, and a Prometheus/Grafana pair.
 
-The thick lines are the replication streams. Note where they land: each
-cluster's history service dials the *other* cluster's internal frontend, never
-its public one.
+The thick lines are the replication streams, and where they attach is the
+point: the peer's **frontend**, the same port the Web UI and the SDK use.
 
 <!-- diagram: architecture-topology -->
 ```mermaid
@@ -86,13 +85,15 @@ flowchart TB
     COREB --- PGB
     COREB --- ESB
 
-    COREA ==>|"replication"| FB
-    COREB ==>|"replication"| FA
+    %% Arrows follow the data. The connection is opened the other way round -
+    %% each cluster's history service dials the peer's frontend - but drawing it
+    %% that way makes dagre rank one cluster below the other, and the pair comes
+    %% out staggered instead of side by side.
+    FB ==>|"replication"| COREA
+    FA ==>|"replication"| COREB
 
-    %% Invisible links, purely for layout. Without the first, the replication
-    %% edges make dagre rank one cluster below the other and the pair comes out
-    %% staggered; without the other two, the Shared box drifts up beside them.
-    CLA ~~~ CLB
+    %% Invisible links, purely for layout: without them the Shared box drifts up
+    %% beside the clusters instead of sitting under them.
     IFA ~~~ PROM
     IFB ~~~ PROM
 
@@ -102,9 +103,11 @@ flowchart TB
 
 As a PNG: [docs/architecture-topology.png](docs/architecture-topology.png)
 
-Note where the replication streams land: on the peer's **frontend**, the same
-port the Web UI and the SDK use. That is only possible because the frontend
-authenticates by certificate and nothing else - see below.
+The thick arrows follow the data. Connections are opened the other way round:
+each cluster's history service dials the peer's frontend and streams from it,
+so cluster-a's frontend feeding cluster-b's history is cluster-b having dialled
+out. Either way the traffic terminates on `:7233`, which works only because the
+frontend authenticates by certificate and nothing else - see below.
 
 Two kinds of connection, both proving themselves with a certificate signed by
 the one self-signed root CA:
