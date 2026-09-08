@@ -46,6 +46,15 @@ flowchart TB
         SDK["Python SDK<br/>worker · starter"]
     end
 
+    subgraph CLA["cluster-a &nbsp;·&nbsp; docker-compose.yml"]
+        direction TB
+        UIA["Web UI :8080"]
+        FA["<b>frontend :7233</b><br/>host :7233<br/>mTLS · no token"]
+        COREA["history · matching · worker"]
+        IFA["internal-frontend :7236<br/><i>system workers only</i>"]
+        PGA[("PostgreSQL")]
+        ESA[("Elasticsearch")]
+    end
     subgraph CLB["cluster-b &nbsp;·&nbsp; docker-compose.cluster-b.yml"]
         direction TB
         UIB["Web UI :8081"]
@@ -56,24 +65,14 @@ flowchart TB
         ESB[("Elasticsearch")]
     end
 
-    subgraph CLA["cluster-a &nbsp;·&nbsp; docker-compose.yml"]
-        direction TB
-        UIA["Web UI :8080"]
-        FA["<b>frontend :7233</b><br/>host :7233<br/>mTLS · no token"]
-        COREA["history · matching · worker"]
-        IFA["internal-frontend :7236<br/><i>system workers only</i>"]
-        PGA[("PostgreSQL")]
-        ESA[("Elasticsearch")]
-    end
-
     subgraph SHARED["Shared"]
         direction LR
         PROM["Prometheus :9090 · Grafana :8085<br/>scrapes :8002 and :8003"]
         KC["Keycloak :9080<br/>signs users in to the Web UI"]
     end
 
-    BROWSER --> UIB
     BROWSER --> UIA
+    BROWSER --> UIB
     SDK --> FA
 
     UIA --> FA
@@ -89,6 +88,13 @@ flowchart TB
 
     COREA ==>|"replication"| FB
     COREB ==>|"replication"| FA
+
+    %% Invisible links, purely for layout. Without the first, the replication
+    %% edges make dagre rank one cluster below the other and the pair comes out
+    %% staggered; without the other two, the Shared box drifts up beside them.
+    CLA ~~~ CLB
+    IFA ~~~ PROM
+    IFB ~~~ PROM
 
     UIA -.->|OIDC| KC
     UIB -.->|OIDC| KC
