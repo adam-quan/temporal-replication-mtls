@@ -39,7 +39,7 @@ point: the peer's **frontend**, the same port the Web UI and the SDK use.
 <!-- diagram: architecture-topology -->
 ```mermaid
 flowchart TB
-    subgraph HOST["Your machine"]
+    subgraph CLIENTS["Clients"]
         direction LR
         BROWSER["Browser"]
         SDK["Python SDK<br/>worker · starter"]
